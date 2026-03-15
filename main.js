@@ -28,6 +28,12 @@
     let isObsConnected = false; // OBS 连接状态标志
     let isCheckingObs = false; // OBS 检查中标志（防止重复检查）
 
+    // 全屏触发频率检测
+    let fullscreenTriggerCount = 0;
+    let fullscreenTriggerStartTime = 0;
+    const FULLSCREEN_TRIGGER_LIMIT = 4; // 1分钟内最多触发5次
+    const FULLSCREEN_TRIGGER_WINDOW = 30000; // 时间窗口：1分钟
+
     /*** OBS 控制器类（保持原样） ***/
     class OBSController {
         constructor() {
@@ -323,12 +329,71 @@
             .hide-aside-area .basic-player {
                 height: 100vh !important;
             }
+            /* 隐藏小黄车提示 */
+            #shop-popover-vm {
+                display: none !important;
+            }
         `;
         document.head.appendChild(style);
     }
 
+    // 检查全屏触发频率
+    function checkFullscreenTriggerRate() {
+        const now = Date.now();
+
+        // 如果时间窗口已过，重置计数器
+        if (now - fullscreenTriggerStartTime > FULLSCREEN_TRIGGER_WINDOW) {
+            fullscreenTriggerCount = 0;
+            fullscreenTriggerStartTime = now;
+        }
+
+        fullscreenTriggerCount++;
+        console.log(`[全屏保险] 触发次数: ${fullscreenTriggerCount}/${FULLSCREEN_TRIGGER_LIMIT}`);
+
+        // 如果超过限制，清空缓存并刷新页面
+        if (fullscreenTriggerCount >= FULLSCREEN_TRIGGER_LIMIT) {
+            console.log('[全屏保险] 触发过于频繁，清空缓存并刷新页面');
+            // 清空 sessionStorage 和 localStorage
+            sessionStorage.clear();
+            localStorage.clear();
+            // 强制刷新页面（不使用缓存）
+            location.reload(true);
+        }
+    }
+
+    // 关闭礼物面板
+    function closeGiftPopover() {
+        // 设置 localStorage 关闭礼物面板
+        try {
+            localStorage.setItem('FULLSCREEN-GIFT-PANEL-SHOW', '0');
+        } catch (e) {}
+
+        // 查找礼物面板并添加隐藏类
+        const giftPanel = document.getElementById('gift-control-vm');
+        if (giftPanel) {
+            giftPanel.classList.add('hide-gift-panel');
+            console.log('[礼物面板] 已隐藏');
+        }
+
+        // 同时隐藏 fullscreen-container 中的礼物面板
+        const fullscreenContainer = document.getElementById('fullscreen-container');
+        if (fullscreenContainer) {
+            fullscreenContainer.classList.add('gift-panel-hidden');
+        }
+
+        // 隐藏小黄车提示窗口
+        const shopPopover = document.getElementById('shop-popover-vm');
+        if (shopPopover) {
+            shopPopover.style.display = 'none';
+            console.log('[小黄车提示] 已隐藏');
+        }
+    }
+
     // 触发直播全屏
     function triggerLiveFullscreen() {
+        // 检查触发频率
+        checkFullscreenTriggerRate();
+
         // 防止重复触发
         if (liveFullscreenTriggered) return;
         const player = document.getElementById('live-player');
@@ -336,6 +401,9 @@
         // 添加隐藏侧边栏的类
         document.body.classList.add('hide-aside-area');
         liveFullscreenTriggered = true;
+
+        // 关闭礼物面板
+        closeGiftPopover();
     }
 
     // 等待元素出现
@@ -457,6 +525,37 @@
         }
     }
 
+    // 检测视频是否卡顿
+    let lastVideoTime = 0;
+    let stuckCounter = 0;
+
+    function detectVideoStuck() {
+        const video = document.querySelector('#live-player video');
+        if (!video) return;
+
+        const currentTime = video.currentTime;
+
+        // 如果视频在播放但时间没变
+        if (currentTime === lastVideoTime && !video.paused && !video.ended) {
+            stuckCounter++;
+            console.log(`[卡顿检测] 疑似卡顿 ${stuckCounter}/3`);
+
+            // 连续3次检测都卡住，确认卡顿
+            if (stuckCounter >= 3) {
+                console.log('[卡顿检测] 确认视频卡顿，刷新页面');
+                location.reload();
+            }
+        } else {
+            // 正常播放，重置计数器
+            if (stuckCounter > 0) {
+                console.log('[卡顿检测] 视频恢复正常');
+            }
+            stuckCounter = 0;
+        }
+
+        lastVideoTime = currentTime;
+    }
+
     /*** 主入口 ***/
     // 初始化脚本
     function initScript() {
@@ -473,6 +572,8 @@
         setInterval(checkLive, CHECK_INTERVAL);
         // 定时检测全屏状态（每5秒检测一次）
         setInterval(checkAndEnsureFullscreen, 5000);
+        // 定时检测视频卡顿（每3秒检测一次）
+        setInterval(detectVideoStuck, 3000);
     }
 
     // 启动脚本
