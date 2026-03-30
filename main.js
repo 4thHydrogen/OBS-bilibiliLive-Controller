@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Bilibili直播自动刷新+网页全屏+OBS控制（稳定版6.5）
+// @name         Bilibili直播自动刷新+网页全屏+OBS控制
 // @namespace    https://github.com/tampermonkey
-// @version      6.5
+// @version      6.7
 // @description  自动刷新未播放直播、直播开播后自动网页全屏，OBS自动控制录制（修复长时间运行后不全屏）
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -28,11 +28,27 @@
     let isObsConnected = false; // OBS 连接状态标志
     let isCheckingObs = false; // OBS 检查中标志（防止重复检查）
 
+    // 开播检测
+    let wasLive = false; // 上次检测是否正在直播
+    let hasReloadedForLive = false; // 本次开播是否已经刷新过页面
+
     // 全屏触发频率检测
     let fullscreenTriggerCount = 0;
     let fullscreenTriggerStartTime = 0;
     const FULLSCREEN_TRIGGER_LIMIT = 4; // 1分钟内最多触发5次
     const FULLSCREEN_TRIGGER_WINDOW = 30000; // 时间窗口：1分钟
+
+    // DOM 元素缓存
+    let cachedVideoElement = null; // 缓存的视频元素
+    let cachedPlayerElement = null; // 缓存的播放器元素
+    let lastWindowHeight = window.innerHeight; // 缓存窗口高度
+    let isFullscreenCache = null; // 全屏状态缓存
+    let fullscreenCheckCount = 0; // 全屏检测计数器（用于智能判断）
+    const FULLSCREEN_CHECK_THRESHOLD = 2; // 连续检测阈值
+
+    // MutationObserver 实例
+    let videoObserver = null;
+    let playerObserver = null;
 
     /*** OBS 控制器类（保持原样） ***/
     class OBSController {
@@ -457,16 +473,29 @@
             liveFullscreenTriggered = false;
             lastVideoElement = null;
             initializedFullscreenAfterReload = false;
+            hasReloadedForLive = false; // 重置开播刷新标志
 
             // 移除全屏样式
             document.body.classList.remove('hide-aside-area');
 
             // 停止 OBS 录制
             await checkAndControlOBS();
+
+            wasLive = false;
             return;
         }
 
-        const video = document.querySelector('#live-player video'); // 获取视频元素
+        // 检测从非直播状态变为直播状态（初次开播）
+        if (isLive && !wasLive && !hasReloadedForLive) {
+            console.log('[开播检测] 初次开播，刷新页面');
+            hasReloadedForLive = true;
+            location.reload();
+            return;
+        }
+
+        wasLive = isLive;
+
+        const video = getCachedVideo(); // 使用缓存获取视频元素
 
         // 如果视频元素不存在，刷新页面
         if (!video) {
@@ -480,48 +509,91 @@
             videoFullscreenTriggered = false;
             liveFullscreenTriggered = false;
             initializedFullscreenAfterReload = false;
+            // 清除全屏状态缓存
+            isFullscreenCache = null;
+            fullscreenCheckCount = 0;
         }
 
         // 初始化全屏
         initializeFullscreenAfterReload();
     }
 
-    // 检查是否已全屏
+    // 获取缓存的视频元素（带自动更新）
+    function getCachedVideo() {
+        if (cachedVideoElement && document.contains(cachedVideoElement)) {
+            return cachedVideoElement;
+        }
+        cachedVideoElement = document.querySelector('#live-player video');
+        return cachedVideoElement;
+    }
+
+    // 获取缓存的播放器元素
+    function getCachedPlayer() {
+        if (cachedPlayerElement && document.contains(cachedPlayerElement)) {
+            return cachedPlayerElement;
+        }
+        const playerSelectors = ['.basic-player', '#live-player', '#web-player__bottom-bar__container'];
+        for (const selector of playerSelectors) {
+            cachedPlayerElement = document.querySelector(selector);
+            if (cachedPlayerElement) break;
+        }
+        return cachedPlayerElement;
+    }
+
+    // 检查是否已全屏（带缓存优化）
     function isFullscreen() {
         // 检查 CSS 类（主要判断依据）
         const hasClass = document.body.classList.contains('hide-aside-area');
-        if (!hasClass) return false;
-        
-        // 尝试多种播放器选择器
-        const playerSelectors = ['.basic-player', '#live-player', '#web-player__bottom-bar__container'];
-        let player = null;
-        for (const selector of playerSelectors) {
-            player = document.querySelector(selector);
-            if (player) break;
+        if (!hasClass) {
+            isFullscreenCache = false;
+            return false;
         }
-        
-        if (!player) return false;
-        
+
+        // 如果窗口高度未变化且缓存有效，直接返回缓存结果
+        const currentWindowHeight = window.innerHeight;
+        if (currentWindowHeight === lastWindowHeight && isFullscreenCache !== null) {
+            return isFullscreenCache;
+        }
+
+        // 更新缓存的窗口高度
+        lastWindowHeight = currentWindowHeight;
+
+        const player = getCachedPlayer();
+        if (!player) {
+            isFullscreenCache = false;
+            return false;
+        }
+
         // 检查播放器高度是否接近全屏（允许一定误差）
         const playerHeight = parseInt(getComputedStyle(player).height);
-        const windowHeight = window.innerHeight;
-        const heightDiff = Math.abs(playerHeight - windowHeight);
-        const isFullHeight = heightDiff < 50; // 允许50px误差
-        
-        return isFullHeight;
+        const heightDiff = Math.abs(playerHeight - currentWindowHeight);
+        isFullscreenCache = heightDiff < 50; // 允许50px误差
+
+        return isFullscreenCache;
     }
 
-    // 定时检测并确保全屏
+    // 定时检测并确保全屏（带智能防抖）
     function checkAndEnsureFullscreen() {
-        const video = document.querySelector('#live-player video');
-        console.log('进行全屏检测');
+        const video = getCachedVideo();
         if (!video) return; // 没有视频元素时不检测
 
         if (!isFullscreen()) {
-            console.log('[全屏检测] 检测到未全屏，触发全屏');
-            // 重置标志，允许再次触发
-            liveFullscreenTriggered = false;
-            triggerLiveFullscreen();
+            fullscreenCheckCount++;
+            console.log(`[全屏检测] 检测到未全屏 (${fullscreenCheckCount}/${FULLSCREEN_CHECK_THRESHOLD})`);
+
+            // 只有连续多次检测都未全屏才触发（防止误报）
+            if (fullscreenCheckCount >= FULLSCREEN_CHECK_THRESHOLD) {
+                console.log('[全屏检测] 确认未全屏，触发全屏');
+                // 重置标志，允许再次触发
+                liveFullscreenTriggered = false;
+                triggerLiveFullscreen();
+                fullscreenCheckCount = 0; // 重置计数器
+            }
+        } else {
+            // 已全屏，重置计数器
+            if (fullscreenCheckCount > 0) {
+                fullscreenCheckCount = 0;
+            }
         }
     }
 
@@ -530,7 +602,7 @@
     let stuckCounter = 0;
 
     function detectVideoStuck() {
-        const video = document.querySelector('#live-player video');
+        const video = getCachedVideo();
         if (!video) return;
 
         const currentTime = video.currentTime;
@@ -556,24 +628,88 @@
         lastVideoTime = currentTime;
     }
 
+    // 主循环计数器
+    let mainLoopCounter = 0;
+    const LIVE_CHECK_INTERVAL = Math.ceil(CHECK_INTERVAL / 1000); // 转换为秒计数
+    const FULLSCREEN_CHECK_INTERVAL = 5; // 每5秒检查一次全屏
+    const STUCK_CHECK_INTERVAL = 3; // 每3秒检查一次卡顿
+
+    // 合并的主循环函数
+    function mainLoop() {
+        mainLoopCounter++;
+
+        // 每10秒检查直播状态
+        if (mainLoopCounter % LIVE_CHECK_INTERVAL === 0) {
+            checkLive();
+        }
+
+        // 每5秒检查全屏状态
+        if (mainLoopCounter % FULLSCREEN_CHECK_INTERVAL === 0) {
+            checkAndEnsureFullscreen();
+        }
+
+        // 每3秒检查视频卡顿
+        if (mainLoopCounter % STUCK_CHECK_INTERVAL === 0) {
+            detectVideoStuck();
+        }
+    }
+
+    // 设置 MutationObserver 监听 DOM 变化
+    function setupObservers() {
+        // 监听视频元素变化
+        const livePlayer = document.getElementById('live-player');
+        if (livePlayer && !videoObserver) {
+            videoObserver = new MutationObserver((mutations) => {
+                // 当 DOM 变化时，清除缓存让下次获取时重新查询
+                for (const mutation of mutations) {
+                    if (mutation.type === 'childList') {
+                        // 检查 video 元素是否被添加或移除
+                        const hasVideoChange = Array.from(mutation.addedNodes).some(node =>
+                            node.nodeName === 'VIDEO' || node.querySelector?.('video')
+                        ) || Array.from(mutation.removedNodes).some(node =>
+                            node.nodeName === 'VIDEO' || node.querySelector?.('video')
+                        );
+
+                        if (hasVideoChange) {
+                            cachedVideoElement = null;
+                            console.log('[DOM观察] 视频元素变化，清除缓存');
+                        }
+                    }
+                }
+            });
+
+            videoObserver.observe(livePlayer, {
+                childList: true,
+                subtree: true
+            });
+        }
+
+        // 监听窗口大小变化，清除全屏缓存
+        window.addEventListener('resize', () => {
+            lastWindowHeight = window.innerHeight;
+            isFullscreenCache = null;
+            cachedPlayerElement = null;
+        }, { passive: true });
+    }
+
     /*** 主入口 ***/
     // 初始化脚本
     function initScript() {
-        console.log('[Bilibili自动刷新] v6.5 启动');
+        console.log('[Bilibili自动刷新] v6.7-optimized 启动');
 
         // 添加全屏样式
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', addFullscreenStyles);
+            document.addEventListener('DOMContentLoaded', () => {
+                addFullscreenStyles();
+                setupObservers();
+            });
         } else {
             addFullscreenStyles();
+            setupObservers();
         }
 
-        // 定时检查直播状态
-        setInterval(checkLive, CHECK_INTERVAL);
-        // 定时检测全屏状态（每5秒检测一次）
-        setInterval(checkAndEnsureFullscreen, 5000);
-        // 定时检测视频卡顿（每3秒检测一次）
-        setInterval(detectVideoStuck, 3000);
+        // 使用单一主循环替代多个 setInterval
+        setInterval(mainLoop, 1000);
     }
 
     // 启动脚本
