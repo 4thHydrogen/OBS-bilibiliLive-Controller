@@ -18,15 +18,15 @@
     const CHECK_INTERVAL = 10000; // 检查间隔时间（毫秒）
     const OBS_PORT = 4455; // OBS WebSocket 端口
     const OBS_PASSWORD = '123123'; // OBS WebSocket 密码
-    const DEBUG_LOG = true; // 日志开关：true=开启日志，false=关闭日志
+    const DEBUG_LOG = false; // 日志开关：true=开启日志，false=关闭日志
 
-    let videoFullscreenTriggered = false; // 视频全屏触发标志
     let liveFullscreenTriggered = false; // 直播全屏触发标志
     let lastVideoElement = null; // 上一个视频元素引用
 
     let obsController = null; // OBS 控制器实例
     let isObsConnected = false; // OBS 连接状态标志
     let isCheckingObs = false; // OBS 检查中标志（防止重复检查）
+    let isCheckingLive = false; // 直播状态检查中标志（防止重复检查）
 
     // 开播检测
     let wasLive = sessionStorage.getItem('wasLive') === 'true'; // 上次检测是否正在直播
@@ -42,11 +42,11 @@
     let cachedVideoElement = null; // 缓存的视频元素
     let cachedPlayerElement = null; // 缓存的播放器元素
     let lastWindowHeight = window.innerHeight; // 缓存窗口高度
-    let isFullscreenCache = null; // 全屏状态缓存
 
     // MutationObserver 实例
     let videoObserver = null;
     let playerObserver = null;
+    let resizeListener = null; // resize 事件监听器引用
 
     /*** OBS 控制器类（保持原样） ***/
     class OBSController {
@@ -60,6 +60,7 @@
             this.reconnectInterval = 3000; // 重连间隔时间（毫秒）
             this.authSalt = null; // 认证盐值
             this.authChallenge = null; // 认证挑战值
+            this.reconnectTimer = null; // 重连定时器ID
         }
 
         async connect(port = OBS_PORT, password = OBS_PASSWORD) { // 连接到 OBS WebSocket
@@ -129,7 +130,9 @@
                             this.handleRequestResponse(message.d);
                         }
 
-                    } catch (error) {}
+                    } catch (error) {
+                        log('[OBS] 消息处理错误:', error.message);
+                    }
                 };
 
                 // 连接错误事件处理
@@ -164,9 +167,16 @@
 
         // 处理重连逻辑
         handleReconnect(port, password, reject) {
+            // 清理之前的重连定时器
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+
             if (this.reconnectAttempts < this.maxReconnectAttempts) {
                 this.reconnectAttempts++;
-                setTimeout(() => {
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
                     this.connect(port, password).catch(reject);
                 }, this.reconnectInterval);
             } else {
@@ -255,6 +265,11 @@
                 this.ws.close();
                 this.ws = null;
             }
+            // 清理重连定时器
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
             this.authenticated = false;
             this.pendingRequests.clear();
             this.authSalt = null;
@@ -271,6 +286,10 @@
         try {
             // 如果未连接，尝试连接
             if (!isObsConnected || !obsController) {
+                // 确保关闭旧实例再创建新实例
+                if (obsController) {
+                    obsController.close();
+                }
                 obsController = new OBSController();
                 try {
                     await obsController.connect();
@@ -289,7 +308,9 @@
                 if (status.outputActive) {
                     await obsController.stopRecording();
                 }
-            } catch (error) {}
+            } catch (error) {
+                log('[OBS] 停止录制失败:', error.message);
+            }
 
         } catch (error) {
             // 发生错误时关闭连接
@@ -339,7 +360,9 @@
     function triggerDoubleClick(el) {
         try {
             el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-        } catch {}
+        } catch (err) {
+            log('[双击事件] 触发失败:', err.message);
+        }
     }
 
     // 添加全屏样式
@@ -492,9 +515,7 @@
         if (video !== lastVideoElement) {
             log('[全屏模块] 视频元素变化，重置全屏标志');
             lastVideoElement = video;
-            videoFullscreenTriggered = false;
             liveFullscreenTriggered = false;
-            isFullscreenCache = null;
         }
 
         // 检查当前是否真的全屏
@@ -511,16 +532,20 @@
     /*** 核心检测逻辑 ***/
     // 检查直播状态并执行相应操作
     async function checkLive() {
-        const roomId = parseRoomIdFromUrl();
-        if (!roomId) return;
+        // 防止重复检查
+        if (isCheckingLive) return;
+        isCheckingLive = true;
 
-        // 获取直播状态
-        const isLive = await fetchLiveStatus(roomId);
+        try {
+            const roomId = parseRoomIdFromUrl();
+            if (!roomId) return;
+
+            // 获取直播状态
+            const isLive = await fetchLiveStatus(roomId);
 
         // 如果未开播
         if (!isLive) {
             // 重置所有标志
-            videoFullscreenTriggered = false;
             liveFullscreenTriggered = false;
             lastVideoElement = null;
             hasReloadedForLive = false; // 重置开播刷新标志
@@ -551,6 +576,9 @@
         sessionStorage.setItem('wasLive', isLive ? 'true' : 'false');
 
         // 注：全屏逻辑已移到独立的 checkAndTriggerFullscreen 函数中
+        } finally {
+            isCheckingLive = false;
+        }
     }
 
     // 获取缓存的视频元素（带自动更新）
@@ -593,9 +621,6 @@
 
     // 全屏触发（简化版：只触发一次，不重复检查）
     function triggerFullscreenOnce() {
-        // 防止重复触发
-        if (liveFullscreenTriggered) return;
-
         const video = getCachedVideo();
         if (!video) return;
 
@@ -634,16 +659,42 @@
         lastVideoTime = currentTime;
     }
 
-    // 主循环计数器
+    // 主循环计数器（主循环每5秒执行一次）
     let mainLoopCounter = 0;
-    const LIVE_CHECK_INTERVAL = Math.ceil(CHECK_INTERVAL / 1000); // 转换为秒计数
-    const STUCK_CHECK_INTERVAL = 3; // 每3秒检查一次卡顿
-    const FULLSCREEN_CHECK_INTERVAL = 5; // 每5秒检查一次全屏
+    const LIVE_CHECK_INTERVAL = 2; // 每10秒检查一次直播 (2 * 5秒)
+    const STUCK_CHECK_INTERVAL = 1; // 每5秒检查一次卡顿 (1 * 5秒)
+    const FULLSCREEN_CHECK_INTERVAL = 1; // 每5秒检查一次全屏 (1 * 5秒)
 
-    // 合并的主循环函数
+    // 页面可见性标志
+    let isPageVisible = true;
+
+    // 监听页面可见性变化
+    document.addEventListener('visibilitychange', () => {
+        isPageVisible = document.visibilityState === 'visible';
+        log(`[页面可见性] ${isPageVisible ? '可见' : '隐藏'}`);
+    });
+
+    // 合并的主循环函数（每5秒执行一次）
     function mainLoop() {
+        // 页面隐藏时跳过大部分检查（节省资源）
+        if (!isPageVisible) {
+            // 后台时只执行最小限度的检查
+            if (mainLoopCounter % 6 === 0) { // 每30秒检查一次开播状态 (6 * 5秒)
+                log('[主循环] 后台模式：检查直播状态');
+                checkLive();
+            }
+            mainLoopCounter++;
+            return;
+        }
+
         mainLoopCounter++;
-        log(`[主循环] 第 ${mainLoopCounter} 次执行`);
+
+        // 计数器归零，防止溢出
+        if (mainLoopCounter > 2000) { // 2000 * 5秒 = 约2.7小时
+            mainLoopCounter = 1;
+        }
+
+        log(`[主循环] 第 ${mainLoopCounter} 次执行（每5秒）`);
 
         // 每10秒检查直播状态
         if (mainLoopCounter % LIVE_CHECK_INTERVAL === 0) {
@@ -672,12 +723,38 @@
                 // 当 DOM 变化时，清除缓存让下次获取时重新查询
                 for (const mutation of mutations) {
                     if (mutation.type === 'childList') {
+                        // 跳过弹幕相关的DOM变化（性能优化）
+                        const target = mutation.target;
+                        if (target && (
+                            target.className?.includes?.('danmaku') ||
+                            target.className?.includes?.('chat') ||
+                            target.id?.includes?.('danmaku')
+                        )) {
+                            continue;
+                        }
+
                         // 检查 video 元素是否被添加或移除
-                        const hasVideoChange = Array.from(mutation.addedNodes).some(node =>
-                            node.nodeName === 'VIDEO' || node.querySelector?.('video')
-                        ) || Array.from(mutation.removedNodes).some(node =>
-                            node.nodeName === 'VIDEO' || node.querySelector?.('video')
-                        );
+                        const addedNodes = mutation.addedNodes;
+                        const removedNodes = mutation.removedNodes;
+                        let hasVideoChange = false;
+
+                        for (let i = 0; i < addedNodes.length; i++) {
+                            const node = addedNodes[i];
+                            if (node.nodeName === 'VIDEO') {
+                                hasVideoChange = true;
+                                break;
+                            }
+                        }
+
+                        if (!hasVideoChange) {
+                            for (let i = 0; i < removedNodes.length; i++) {
+                                const node = removedNodes[i];
+                                if (node.nodeName === 'VIDEO') {
+                                    hasVideoChange = true;
+                                    break;
+                                }
+                            }
+                        }
 
                         if (hasVideoChange) {
                             cachedVideoElement = null;
@@ -688,17 +765,17 @@
             });
 
             videoObserver.observe(livePlayer, {
-                childList: true,
-                subtree: true
+                childList: true
+                // 移除 subtree: true 以减少性能开销
             });
         }
 
         // 监听窗口大小变化，清除全屏缓存
-        window.addEventListener('resize', () => {
+        resizeListener = () => {
             lastWindowHeight = window.innerHeight;
-            isFullscreenCache = null;
             cachedPlayerElement = null;
-        }, { passive: true });
+        };
+        window.addEventListener('resize', resizeListener, { passive: true });
 
         // 页面卸载时清理资源，防止内存泄漏
         window.addEventListener('beforeunload', () => {
@@ -712,10 +789,20 @@
                 playerObserver.disconnect();
                 playerObserver = null;
             }
+            // 移除 resize 监听器
+            if (resizeListener) {
+                window.removeEventListener('resize', resizeListener);
+                resizeListener = null;
+            }
             // 关闭 OBS 连接
             if (obsController) {
                 obsController.close();
                 obsController = null;
+            }
+            // 停止主循环定时器
+            if (mainLoopTimer) {
+                clearInterval(mainLoopTimer);
+                mainLoopTimer = null;
             }
             // 清除缓存的 DOM 元素引用
             cachedVideoElement = null;
@@ -744,7 +831,7 @@
         }
 
         // 使用单一主循环替代多个 setInterval
-        mainLoopTimer = setInterval(mainLoop, 1000);
+        mainLoopTimer = setInterval(mainLoop, 5000); // 每5秒执行一次
     }
 
     // 启动脚本
