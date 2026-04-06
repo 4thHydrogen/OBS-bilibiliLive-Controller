@@ -29,8 +29,8 @@
     let isCheckingObs = false; // OBS 检查中标志（防止重复检查）
 
     // 开播检测
-    let wasLive = false; // 上次检测是否正在直播
-    let hasReloadedForLive = false; // 本次开播是否已经刷新过页面
+    let wasLive = sessionStorage.getItem('wasLive') === 'true'; // 上次检测是否正在直播
+    let hasReloadedForLive = sessionStorage.getItem('hasReloadedForLive') === 'true'; // 本次开播是否已经刷新过页面
 
     // 全屏触发频率检测
     let fullscreenTriggerCount = 0;
@@ -249,10 +249,18 @@
         // 关闭 OBS 连接
         close() {
             if (this.ws) {
+                // 清理所有事件监听器，防止内存泄漏
+                this.ws.onopen = null;
+                this.ws.onmessage = null;
+                this.ws.onerror = null;
+                this.ws.onclose = null;
                 this.ws.close();
+                this.ws = null;
             }
             this.authenticated = false;
             this.pendingRequests.clear();
+            this.authSalt = null;
+            this.authChallenge = null;
         }
     }
 
@@ -369,9 +377,15 @@
         // 如果超过限制，清空缓存并刷新页面
         if (fullscreenTriggerCount >= FULLSCREEN_TRIGGER_LIMIT) {
             console.log('[全屏保险] 触发过于频繁，清空缓存并刷新页面');
+            // 保存开播检测状态
+            const savedWasLive = sessionStorage.getItem('wasLive');
+            const savedHasReloaded = sessionStorage.getItem('hasReloadedForLive');
             // 清空 sessionStorage 和 localStorage
             sessionStorage.clear();
             localStorage.clear();
+            // 恢复开播检测状态
+            if (savedWasLive) sessionStorage.setItem('wasLive', savedWasLive);
+            if (savedHasReloaded) sessionStorage.setItem('hasReloadedForLive', savedHasReloaded);
             // 强制刷新页面（不使用缓存）
             location.reload(true);
         }
@@ -482,6 +496,8 @@
             await checkAndControlOBS();
 
             wasLive = false;
+            sessionStorage.setItem('wasLive', 'false');
+            sessionStorage.removeItem('hasReloadedForLive'); // 清除已刷新标志，下次开播可再次触发
             return;
         }
 
@@ -489,9 +505,14 @@
         if (isLive && !wasLive && !hasReloadedForLive) {
             console.log('[开播检测] 初次开播，刷新页面');
             hasReloadedForLive = true;
+            sessionStorage.setItem('hasReloadedForLive', 'true');
+            sessionStorage.setItem('wasLive', 'true');
             location.reload();
             return;
         }
+
+        wasLive = isLive;
+        sessionStorage.setItem('wasLive', isLive ? 'true' : 'false');
 
         wasLive = isLive;
 
@@ -690,6 +711,29 @@
             isFullscreenCache = null;
             cachedPlayerElement = null;
         }, { passive: true });
+
+        // 页面卸载时清理资源，防止内存泄漏
+        window.addEventListener('beforeunload', () => {
+            console.log('[页面卸载] 清理资源');
+            // 断开 MutationObserver
+            if (videoObserver) {
+                videoObserver.disconnect();
+                videoObserver = null;
+            }
+            if (playerObserver) {
+                playerObserver.disconnect();
+                playerObserver = null;
+            }
+            // 关闭 OBS 连接
+            if (obsController) {
+                obsController.close();
+                obsController = null;
+            }
+            // 清除缓存的 DOM 元素引用
+            cachedVideoElement = null;
+            cachedPlayerElement = null;
+            lastVideoElement = null;
+        });
     }
 
     /*** 主入口 ***/
@@ -710,6 +754,28 @@
 
         // 使用单一主循环替代多个 setInterval
         setInterval(mainLoop, 1000);
+    }
+
+    // 主循环定时器引用（用于可能的清理）
+    let mainLoopTimer = null;
+
+    // 启动脚本
+    function initScript() {
+        console.log('[Bilibili自动刷新] v6.7-optimized 启动');
+
+        // 添加全屏样式
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                addFullscreenStyles();
+                setupObservers();
+            });
+        } else {
+            addFullscreenStyles();
+            setupObservers();
+        }
+
+        // 使用单一主循环替代多个 setInterval
+        mainLoopTimer = setInterval(mainLoop, 1000);
     }
 
     // 启动脚本
