@@ -628,42 +628,66 @@
         triggerLiveFullscreen();
     }
 
-    // 检测视频是否卡顿
+    // 检测视频是否卡顿或断断续续
+    let lastCheckTime = Date.now();
     let lastVideoTime = 0;
-    let stuckCounter = 0;
+    let stallCounter = 0;
 
     function detectVideoStuck() {
         const video = getCachedVideo();
-        if (!video) return;
+        if (!video || video.paused || video.ended) return;
 
+        const now = Date.now();
         const currentTime = video.currentTime;
+        const timeProgress = currentTime - lastVideoTime; // 实际播放进度
+        const expectedProgress = (now - lastCheckTime) / 1000; // 应该播放的进度
+        const progressRatio = timeProgress / expectedProgress; // 播放比例
 
-        // 如果视频在播放但时间没变
-        if (currentTime === lastVideoTime && !video.paused && !video.ended) {
-            stuckCounter++;
-            log(`[卡顿检测] 疑似卡顿 ${stuckCounter}/3`);
+        // 检测指标：
+        // 1. 完全卡住（时间为0）
+        const isStuck = timeProgress === 0;
+        // 2. 断断续续（播放比例<50%，说明卡顿严重）
+        const isStuttering = progressRatio < 0.5 && progressRatio > 0;
+        // 3. 缓冲不足（readyState<3且缓冲落后）
+        let bufferAhead = 0;
+        if (video.buffered.length > 0) {
+            bufferAhead = video.buffered.end(video.buffered.length - 1) - currentTime;
+        }
+        const bufferLow = video.readyState < 3 && bufferAhead < 2;
 
-            // 连续3次检测都卡住，确认卡顿
-            if (stuckCounter >= 3) {
-                log('[卡顿检测] 确认视频卡顿，刷新页面');
+        if (isStuck || isStuttering || bufferLow) {
+            stallCounter++;
+            log(`[卡顿检测] 异常计数 ${stallCounter}/5`,
+                isStuck ? '[完全卡住]' : '',
+                isStuttering ? '[断断续续]' : '',
+                bufferLow ? '[缓冲不足]' : '');
+
+            // 连续5次检测异常，刷新页面
+            if (stallCounter >= 5) {
+                log('[卡顿检测] 检测到持续卡顿，清理缓存并刷新页面');
+                // 清理缓存
+                cachedVideoElement = null;
+                cachedPlayerElement = null;
+                sessionStorage.clear();
                 location.reload();
             }
         } else {
             // 正常播放，重置计数器
-            if (stuckCounter > 0) {
-                log('[卡顿检测] 视频恢复正常');
+            if (stallCounter > 0) {
+                log('[卡顿检测] 播放恢复正常');
             }
-            stuckCounter = 0;
+            stallCounter = 0;
         }
 
+        lastCheckTime = now;
         lastVideoTime = currentTime;
     }
 
-    // 主循环计数器（主循环每5秒执行一次）
+    // 主循环计数器
     let mainLoopCounter = 0;
-    const LIVE_CHECK_INTERVAL = 2; // 每10秒检查一次直播 (2 * 5秒)
-    const STUCK_CHECK_INTERVAL = 1; // 每5秒检查一次卡顿 (1 * 5秒)
-    const FULLSCREEN_CHECK_INTERVAL = 1; // 每5秒检查一次全屏 (1 * 5秒)
+    const LIVE_CHECK_INTERVAL = 10; // 直播状态检查间隔
+    const STUCK_CHECK_INTERVAL = 5; // 视频卡顿检测间隔
+    const FULLSCREEN_CHECK_INTERVAL = 5; // 全屏状态检查间隔
 
     // 页面可见性标志
     let isPageVisible = true;
@@ -679,7 +703,7 @@
         // 页面隐藏时跳过大部分检查（节省资源）
         if (!isPageVisible) {
             // 后台时只执行最小限度的检查
-            if (mainLoopCounter % 6 === 0) { // 每30秒检查一次开播状态 (6 * 5秒)
+            if (mainLoopCounter % 30 === 0) {
                 log('[主循环] 后台模式：检查直播状态');
                 checkLive();
             }
@@ -690,28 +714,27 @@
         mainLoopCounter++;
 
         // 计数器归零，防止溢出
-        if (mainLoopCounter > 2000) { // 2000 * 5秒 = 约2.7小时
+        if (mainLoopCounter > 2000) {
             mainLoopCounter = 1;
         }
 
-        log(`[主循环] 第 ${mainLoopCounter} 次执行（每5秒）`);
+        log(`[主循环] 第 ${mainLoopCounter} 次执行`);
 
-        // 每10秒检查直播状态
+        // 检查直播状态
         if (mainLoopCounter % LIVE_CHECK_INTERVAL === 0) {
             log('[主循环] 触发直播状态检查');
             checkLive();
         }
 
-        // 每5秒检查并触发全屏（独立模块）
+        // 检查并触发全屏
         if (mainLoopCounter % FULLSCREEN_CHECK_INTERVAL === 0) {
             checkAndTriggerFullscreen();
         }
 
-        // 每3秒检查视频卡顿（暂时禁用）
-        // if (mainLoopCounter % STUCK_CHECK_INTERVAL === 0) {
-        //     console.log('[主循环] 触发卡顿检测');
-        //     detectVideoStuck();
-        // }
+        // 检查视频卡顿
+        if (mainLoopCounter % STUCK_CHECK_INTERVAL === 0) {
+            detectVideoStuck();
+        }
     }
 
     // 设置 MutationObserver 监听 DOM 变化
@@ -720,45 +743,32 @@
         const livePlayer = document.getElementById('live-player');
         if (livePlayer && !videoObserver) {
             videoObserver = new MutationObserver((mutations) => {
-                // 当 DOM 变化时，清除缓存让下次获取时重新查询
+                // 快速返回：如果缓存的视频元素仍然有效，无需处理
+                if (cachedVideoElement && document.contains(cachedVideoElement)) {
+                    return;
+                }
+
+                // 检查是否有 VIDEO 元素变化
                 for (const mutation of mutations) {
-                    if (mutation.type === 'childList') {
-                        // 跳过弹幕相关的DOM变化（性能优化）
-                        const target = mutation.target;
-                        if (target && (
-                            target.className?.includes?.('danmaku') ||
-                            target.className?.includes?.('chat') ||
-                            target.id?.includes?.('danmaku')
-                        )) {
-                            continue;
-                        }
+                    if (mutation.type !== 'childList') continue;
 
-                        // 检查 video 元素是否被添加或移除
-                        const addedNodes = mutation.addedNodes;
-                        const removedNodes = mutation.removedNodes;
-                        let hasVideoChange = false;
-
-                        for (let i = 0; i < addedNodes.length; i++) {
-                            const node = addedNodes[i];
-                            if (node.nodeName === 'VIDEO') {
-                                hasVideoChange = true;
-                                break;
-                            }
-                        }
-
-                        if (!hasVideoChange) {
-                            for (let i = 0; i < removedNodes.length; i++) {
-                                const node = removedNodes[i];
-                                if (node.nodeName === 'VIDEO') {
-                                    hasVideoChange = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (hasVideoChange) {
+                    // 检查添加的节点
+                    const addedNodes = mutation.addedNodes;
+                    for (let i = 0; i < addedNodes.length; i++) {
+                        if (addedNodes[i].nodeName === 'VIDEO') {
                             cachedVideoElement = null;
-                            log('[DOM观察] 视频元素变化，清除缓存');
+                            log('[DOM观察] 视频元素添加，清除缓存');
+                            return; // 发现后立即返回
+                        }
+                    }
+
+                    // 检查移除的节点
+                    const removedNodes = mutation.removedNodes;
+                    for (let i = 0; i < removedNodes.length; i++) {
+                        if (removedNodes[i].nodeName === 'VIDEO') {
+                            cachedVideoElement = null;
+                            log('[DOM观察] 视频元素移除，清除缓存');
+                            return; // 发现后立即返回
                         }
                     }
                 }
@@ -831,7 +841,7 @@
         }
 
         // 使用单一主循环替代多个 setInterval
-        mainLoopTimer = setInterval(mainLoop, 5000); // 每5秒执行一次
+        mainLoopTimer = setInterval(mainLoop, 1000); // 每1秒执行一次
     }
 
     // 启动脚本
