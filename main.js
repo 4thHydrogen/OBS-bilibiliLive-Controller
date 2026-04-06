@@ -18,11 +18,11 @@
     const CHECK_INTERVAL = 10000; // 检查间隔时间（毫秒）
     const OBS_PORT = 4455; // OBS WebSocket 端口
     const OBS_PASSWORD = '123123'; // OBS WebSocket 密码
+    const DEBUG_LOG = true; // 日志开关：true=开启日志，false=关闭日志
 
     let videoFullscreenTriggered = false; // 视频全屏触发标志
     let liveFullscreenTriggered = false; // 直播全屏触发标志
     let lastVideoElement = null; // 上一个视频元素引用
-    let initializedFullscreenAfterReload = false; // 重载后初始化全屏标志
 
     let obsController = null; // OBS 控制器实例
     let isObsConnected = false; // OBS 连接状态标志
@@ -43,8 +43,6 @@
     let cachedPlayerElement = null; // 缓存的播放器元素
     let lastWindowHeight = window.innerHeight; // 缓存窗口高度
     let isFullscreenCache = null; // 全屏状态缓存
-    let fullscreenCheckCount = 0; // 全屏检测计数器（用于智能判断）
-    const FULLSCREEN_CHECK_THRESHOLD = 2; // 连续检测阈值
 
     // MutationObserver 实例
     let videoObserver = null;
@@ -304,6 +302,13 @@
     }
 
     /*** 工具函数 ***/
+    // 日志输出函数（受 DEBUG_LOG 开关控制）
+    function log(...args) {
+        if (DEBUG_LOG) {
+            console.log(...args);
+        }
+    }
+
     // 从 URL 中解析房间号
     function parseRoomIdFromUrl() {
         const m = location.pathname.match(/^\/(\d+)(?:\/|$)/);
@@ -345,16 +350,36 @@
         const style = document.createElement('style');
         style.id = 'bilibili-fullscreen-styles';
         style.textContent = `
+            /* 全屏时隐藏侧边栏和其他元素 */
             .hide-aside-area #web-player__bottom-bar__container,
             .hide-aside-area .web-player-icon-roomStatus,
-            .hide-aside-area .web-player-controller-wrap {
+            .hide-aside-area .web-player-icon-feedback,
+            .hide-aside-area #aside-area-vm,
+            .hide-aside-area .chat-history-panel,
+            .hide-aside-area .control-panel-ctnr,
+            .hide-aside-area .side-bar-cntr {
                 display: none !important;
             }
-            .hide-aside-area .basic-player {
+            /* 播放器占满整个窗口 */
+            .hide-aside-area #player-ctnr,
+            .hide-aside-area #live-player,
+            .hide-aside-area .live-player-ctnr,
+            .hide-aside-area .fullscreen-container-paddingbox,
+            .hide-aside-area #fullscreen-container {
+                width: 100vw !important;
                 height: 100vh !important;
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                z-index: 9999 !important;
             }
             /* 隐藏小黄车提示 */
             #shop-popover-vm {
+                display: none !important;
+            }
+            /* 隐藏礼物控制区 */
+            .hide-aside-area #gift-control-vm,
+            .hide-aside-area .gift-control-section {
                 display: none !important;
             }
         `;
@@ -372,11 +397,11 @@
         }
 
         fullscreenTriggerCount++;
-        console.log(`[全屏保险] 触发次数: ${fullscreenTriggerCount}/${FULLSCREEN_TRIGGER_LIMIT}`);
+        log(`[全屏保险] 触发次数: ${fullscreenTriggerCount}/${FULLSCREEN_TRIGGER_LIMIT}`);
 
         // 如果超过限制，清空缓存并刷新页面
         if (fullscreenTriggerCount >= FULLSCREEN_TRIGGER_LIMIT) {
-            console.log('[全屏保险] 触发过于频繁，清空缓存并刷新页面');
+            log('[全屏保险] 触发过于频繁，清空缓存并刷新页面');
             // 保存开播检测状态
             const savedWasLive = sessionStorage.getItem('wasLive');
             const savedHasReloaded = sessionStorage.getItem('hasReloadedForLive');
@@ -402,7 +427,7 @@
         const giftPanel = document.getElementById('gift-control-vm');
         if (giftPanel) {
             giftPanel.classList.add('hide-gift-panel');
-            console.log('[礼物面板] 已隐藏');
+            log('[礼物面板] 已隐藏');
         }
 
         // 同时隐藏 fullscreen-container 中的礼物面板
@@ -415,63 +440,75 @@
         const shopPopover = document.getElementById('shop-popover-vm');
         if (shopPopover) {
             shopPopover.style.display = 'none';
-            console.log('[小黄车提示] 已隐藏');
+            log('[小黄车提示] 已隐藏');
         }
     }
 
-    // 触发直播全屏
+    // 触发直播全屏（使用CSS强制全屏）
     function triggerLiveFullscreen() {
         // 检查触发频率
         checkFullscreenTriggerRate();
 
         // 防止重复触发
         if (liveFullscreenTriggered) return;
-        const player = document.getElementById('live-player');
-        if (player) triggerDoubleClick(player);
-        // 添加隐藏侧边栏的类
+
+        log('[全屏触发] 使用CSS强制全屏');
+
+        // 添加全屏类，通过CSS强制全屏效果
         document.body.classList.add('hide-aside-area');
+
+        // 同时尝试原生全屏API（视频元素）
+        const video = document.querySelector('video');
+        if (video && document.fullscreenEnabled) {
+            video.requestFullscreen?.().catch((err) => {
+                log('[全屏触发] 原生API失败（正常现象）:', err.message);
+            });
+        }
+
         liveFullscreenTriggered = true;
 
         // 关闭礼物面板
         closeGiftPopover();
     }
 
-    // 等待元素出现
-    function waitForElement(selector, callback, interval = 500, maxTries = 40) {
-        let tries = 0;
-        const timer = setInterval(() => {
-            const el = document.querySelector(selector);
-            if (el) {
-                clearInterval(timer);
-                callback(el);
-            } else if (++tries >= maxTries) {
-                clearInterval(timer);
-            }
-        }, interval);
+    /*** 全屏控制模块 ***/
+    // 独立的检查并触发全屏的函数（每5秒执行一次）
+    function checkAndTriggerFullscreen() {
+        // 如果未开播，不执行全屏化
+        if (!wasLive) {
+            log('[全屏模块] 未开播，跳过全屏检查');
+            return;
+        }
+
+        const video = getCachedVideo();
+
+        // 如果视频元素不存在，跳过
+        if (!video) {
+            log('[全屏模块] 视频元素不存在，跳过');
+            return;
+        }
+
+        // 如果视频元素发生变化，重置标志
+        if (video !== lastVideoElement) {
+            log('[全屏模块] 视频元素变化，重置全屏标志');
+            lastVideoElement = video;
+            videoFullscreenTriggered = false;
+            liveFullscreenTriggered = false;
+            isFullscreenCache = null;
+        }
+
+        // 检查当前是否真的全屏
+        const currentlyFullscreen = isFullscreen();
+
+        if (!currentlyFullscreen) {
+            log('[全屏模块] 未全屏，触发全屏');
+            // 重置标志，允许重新触发全屏
+            liveFullscreenTriggered = false;
+            triggerFullscreenOnce();
+        }
     }
 
-    /****************************************************
-     * 🔧 修改区域：全屏初始化逻辑（基于 video 出现）
-     ****************************************************/
-    // 在页面重载后初始化全屏
-    // function initializeFullscreenAfterReload() {
-    //     // 防止重复初始化
-    //     if (initializedFullscreenAfterReload) return;
-    //     initializedFullscreenAfterReload = true;
-
-    //     console.log("[全屏初始化] 等待 video 元素出现…");
-
-    //     // 等待 video 元素出现后触发全屏
-    //     waitForElement("#live-player video", () => {
-    //         console.log("[全屏初始化] 找到 video，触发网页全屏");
-    //         setTimeout(() => {
-    //             triggerLiveFullscreen();
-    //         }, 1000);
-    //     }, 500, 80);
-    // }
-    /****************************************************/
-
-    /*** 核心检测逻辑（保持不变） ***/
+    /*** 核心检测逻辑 ***/
     // 检查直播状态并执行相应操作
     async function checkLive() {
         const roomId = parseRoomIdFromUrl();
@@ -486,7 +523,6 @@
             videoFullscreenTriggered = false;
             liveFullscreenTriggered = false;
             lastVideoElement = null;
-            initializedFullscreenAfterReload = false;
             hasReloadedForLive = false; // 重置开播刷新标志
 
             // 移除全屏样式
@@ -503,7 +539,7 @@
 
         // 检测从非直播状态变为直播状态（初次开播）
         if (isLive && !wasLive && !hasReloadedForLive) {
-            console.log('[开播检测] 初次开播，刷新页面');
+            log('[开播检测] 初次开播，刷新页面');
             hasReloadedForLive = true;
             sessionStorage.setItem('hasReloadedForLive', 'true');
             sessionStorage.setItem('wasLive', 'true');
@@ -514,29 +550,7 @@
         wasLive = isLive;
         sessionStorage.setItem('wasLive', isLive ? 'true' : 'false');
 
-        wasLive = isLive;
-
-        const video = getCachedVideo(); // 使用缓存获取视频元素
-
-        // 如果视频元素不存在，刷新页面
-        if (!video) {
-            location.reload();
-            return;
-        }
-
-        // 如果视频元素发生变化，重置标志
-        if (video !== lastVideoElement) {
-            lastVideoElement = video;
-            videoFullscreenTriggered = false;
-            liveFullscreenTriggered = false;
-            initializedFullscreenAfterReload = false;
-            // 清除全屏状态缓存
-            isFullscreenCache = null;
-            fullscreenCheckCount = 0;
-        }
-
-        // 初始化全屏
-        initializeFullscreenAfterReload();
+        // 注：全屏逻辑已移到独立的 checkAndTriggerFullscreen 函数中
     }
 
     // 获取缓存的视频元素（带自动更新）
@@ -561,61 +575,32 @@
         return cachedPlayerElement;
     }
 
-    // 检查是否已全屏（带缓存优化）
+    // 检查是否已全屏（简化版）
     function isFullscreen() {
-        // 检查 CSS 类（主要判断依据）
+        // 优先使用浏览器原生全屏API
+        if (document.fullscreenElement) {
+            return true;
+        }
+
+        // 检查 CSS 类（CSS强制全屏模式）
         const hasClass = document.body.classList.contains('hide-aside-area');
-        if (!hasClass) {
-            isFullscreenCache = false;
-            return false;
+        if (hasClass) {
+            return true;
         }
 
-        // 如果窗口高度未变化且缓存有效，直接返回缓存结果
-        const currentWindowHeight = window.innerHeight;
-        if (currentWindowHeight === lastWindowHeight && isFullscreenCache !== null) {
-            return isFullscreenCache;
-        }
-
-        // 更新缓存的窗口高度
-        lastWindowHeight = currentWindowHeight;
-
-        const player = getCachedPlayer();
-        if (!player) {
-            isFullscreenCache = false;
-            return false;
-        }
-
-        // 检查播放器高度是否接近全屏（允许一定误差）
-        const playerHeight = parseInt(getComputedStyle(player).height);
-        const heightDiff = Math.abs(playerHeight - currentWindowHeight);
-        isFullscreenCache = heightDiff < 50; // 允许50px误差
-
-        return isFullscreenCache;
+        return false;
     }
 
-    // 定时检测并确保全屏（带智能防抖）
-    function checkAndEnsureFullscreen() {
+    // 全屏触发（简化版：只触发一次，不重复检查）
+    function triggerFullscreenOnce() {
+        // 防止重复触发
+        if (liveFullscreenTriggered) return;
+
         const video = getCachedVideo();
-        if (!video) return; // 没有视频元素时不检测
+        if (!video) return;
 
-        if (!isFullscreen()) {
-            fullscreenCheckCount++;
-            console.log(`[全屏检测] 检测到未全屏 (${fullscreenCheckCount}/${FULLSCREEN_CHECK_THRESHOLD})`);
-
-            // 只有连续多次检测都未全屏才触发（防止误报）
-            if (fullscreenCheckCount >= FULLSCREEN_CHECK_THRESHOLD) {
-                console.log('[全屏检测] 确认未全屏，触发全屏');
-                // 重置标志，允许再次触发
-                liveFullscreenTriggered = false;
-                triggerLiveFullscreen();
-                fullscreenCheckCount = 0; // 重置计数器
-            }
-        } else {
-            // 已全屏，重置计数器
-            if (fullscreenCheckCount > 0) {
-                fullscreenCheckCount = 0;
-            }
-        }
+        log('[全屏触发] 触发网页全屏');
+        triggerLiveFullscreen();
     }
 
     // 检测视频是否卡顿
@@ -631,17 +616,17 @@
         // 如果视频在播放但时间没变
         if (currentTime === lastVideoTime && !video.paused && !video.ended) {
             stuckCounter++;
-            console.log(`[卡顿检测] 疑似卡顿 ${stuckCounter}/3`);
+            log(`[卡顿检测] 疑似卡顿 ${stuckCounter}/3`);
 
             // 连续3次检测都卡住，确认卡顿
             if (stuckCounter >= 3) {
-                console.log('[卡顿检测] 确认视频卡顿，刷新页面');
+                log('[卡顿检测] 确认视频卡顿，刷新页面');
                 location.reload();
             }
         } else {
             // 正常播放，重置计数器
             if (stuckCounter > 0) {
-                console.log('[卡顿检测] 视频恢复正常');
+                log('[卡顿检测] 视频恢复正常');
             }
             stuckCounter = 0;
         }
@@ -652,27 +637,30 @@
     // 主循环计数器
     let mainLoopCounter = 0;
     const LIVE_CHECK_INTERVAL = Math.ceil(CHECK_INTERVAL / 1000); // 转换为秒计数
-    const FULLSCREEN_CHECK_INTERVAL = 5; // 每5秒检查一次全屏
     const STUCK_CHECK_INTERVAL = 3; // 每3秒检查一次卡顿
+    const FULLSCREEN_CHECK_INTERVAL = 5; // 每5秒检查一次全屏
 
     // 合并的主循环函数
     function mainLoop() {
         mainLoopCounter++;
+        log(`[主循环] 第 ${mainLoopCounter} 次执行`);
 
         // 每10秒检查直播状态
         if (mainLoopCounter % LIVE_CHECK_INTERVAL === 0) {
+            log('[主循环] 触发直播状态检查');
             checkLive();
         }
 
-        // 每5秒检查全屏状态
+        // 每5秒检查并触发全屏（独立模块）
         if (mainLoopCounter % FULLSCREEN_CHECK_INTERVAL === 0) {
-            checkAndEnsureFullscreen();
+            checkAndTriggerFullscreen();
         }
 
-        // 每3秒检查视频卡顿
-        if (mainLoopCounter % STUCK_CHECK_INTERVAL === 0) {
-            detectVideoStuck();
-        }
+        // 每3秒检查视频卡顿（暂时禁用）
+        // if (mainLoopCounter % STUCK_CHECK_INTERVAL === 0) {
+        //     console.log('[主循环] 触发卡顿检测');
+        //     detectVideoStuck();
+        // }
     }
 
     // 设置 MutationObserver 监听 DOM 变化
@@ -693,7 +681,7 @@
 
                         if (hasVideoChange) {
                             cachedVideoElement = null;
-                            console.log('[DOM观察] 视频元素变化，清除缓存');
+                            log('[DOM观察] 视频元素变化，清除缓存');
                         }
                     }
                 }
@@ -714,7 +702,7 @@
 
         // 页面卸载时清理资源，防止内存泄漏
         window.addEventListener('beforeunload', () => {
-            console.log('[页面卸载] 清理资源');
+            log('[页面卸载] 清理资源');
             // 断开 MutationObserver
             if (videoObserver) {
                 videoObserver.disconnect();
@@ -737,31 +725,12 @@
     }
 
     /*** 主入口 ***/
-    // 初始化脚本
-    function initScript() {
-        console.log('[Bilibili自动刷新] v6.7-optimized 启动');
-
-        // 添加全屏样式
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => {
-                addFullscreenStyles();
-                setupObservers();
-            });
-        } else {
-            addFullscreenStyles();
-            setupObservers();
-        }
-
-        // 使用单一主循环替代多个 setInterval
-        setInterval(mainLoop, 1000);
-    }
-
     // 主循环定时器引用（用于可能的清理）
     let mainLoopTimer = null;
 
-    // 启动脚本
+    /*** 主入口 ***/
     function initScript() {
-        console.log('[Bilibili自动刷新] v6.7-optimized 启动');
+        log('[Bilibili自动刷新] v6.7-optimized 启动');
 
         // 添加全屏样式
         if (document.readyState === 'loading') {
