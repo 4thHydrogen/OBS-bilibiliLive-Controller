@@ -844,6 +844,6 @@
         mainLoopTimer = setInterval(mainLoop, 1000); // 每1秒执行一次
     }
 
-    // 启动脚本
+    //  启动脚本
     initScript();
 })();
