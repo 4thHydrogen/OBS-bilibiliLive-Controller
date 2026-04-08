@@ -1,7 +1,7 @@
  // ==UserScript==
 // @name         Bilibili直播自动刷新+网页全屏
 // @namespace    https://github.com/tampermonkey
-// @version      6.8
+// @version      6.9
 // @description  自动刷新未播放直播、直播开播后自动网页全屏（修复长时间运行后不全屏）
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -13,16 +13,21 @@
 (function () {
     'use strict';
 
-    const CHECK_INTERVAL = 10000; // 检查间隔时间（毫秒）
     const DEBUG_LOG = false; // 日志开关：true=开启日志，false=关闭日志
 
     let liveFullscreenTriggered = false; // 直播全屏触发标志
     let lastVideoElement = null; // 上一个视频元素引用
     let isCheckingLive = false; // 直播状态检查中标志（防止重复检查）
+    let consecutiveApiFailures = 0; // API 连续失败计数
+    const MAX_API_FAILURES = 6; // 连续失败超过此数后启用 DOM 降级检测
+    let consecutiveOfflineCount = 0; // 连续检测到未开播的次数
+    const OFFLINE_CONFIRM_THRESHOLD = 3; // 连续 N 次未开播才确认下播（防止 API 抖动）
 
     // 开播检测
     let wasLive = sessionStorage.getItem('wasLive') === 'true'; // 上次检测是否正在直播
     let hasReloadedForLive = sessionStorage.getItem('hasReloadedForLive') === 'true'; // 本次开播是否已经刷新过页面
+    let reloadAttemptTime = 0; // 上次尝试 reload 的时间戳（用于重试）
+    const RELOAD_RETRY_INTERVAL = 15000; // reload 重试间隔（15秒）
 
     // 全屏触发频率检测
     let fullscreenTriggerCount = 0;
@@ -32,12 +37,10 @@
 
     // DOM 元素缓存
     let cachedVideoElement = null; // 缓存的视频元素
-    let cachedPlayerElement = null; // 缓存的播放器元素
     let lastWindowHeight = window.innerHeight; // 缓存窗口高度
 
     // MutationObserver 实例
     let videoObserver = null;
-    let playerObserver = null;
     let resizeListener = null; // resize 事件监听器引用
 
     /*** 工具函数 ***/
@@ -94,15 +97,6 @@
                 resolve({ success: false, isLive: false, error: 'forced_timeout' });
             }, 5000);
         });
-    }
-
-    // 触发双击事件
-    function triggerDoubleClick(el) {
-        try {
-            el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-        } catch (err) {
-            log('[双击事件] 触发失败:', err.message);
-        }
     }
 
     // 添加全屏样式
@@ -288,10 +282,25 @@
             // 获取直播状态
             const result = await fetchLiveStatus(roomId);
 
-            // 如果检测失败（网络错误等），保持当前状态，不停止录制
+            // 如果检测失败（网络错误等），保持当前状态
             if (!result.success) {
-                log('[checkLive] 直播状态检测失败，保持当前状态:', wasLive ? '直播' : '未开播');
-                return;
+                consecutiveApiFailures++;
+                log('[checkLive] 直播状态检测失败，保持当前状态:', wasLive ? '直播' : '未开播',
+                    `连续失败: ${consecutiveApiFailures}/${MAX_API_FAILURES}`);
+
+                // API 连续失败多次，使用 DOM 降级检测
+                if (consecutiveApiFailures >= MAX_API_FAILURES && !wasLive) {
+                    const video = document.querySelector('#live-player video');
+                    if (video && video.readyState >= 2 && !video.paused) {
+                        log('[checkLive] API 持续失败但检测到视频正在播放，视为开播');
+                        result.success = true;
+                        result.isLive = true;
+                    }
+                }
+
+                if (!result.success) return;
+            } else {
+                consecutiveApiFailures = 0;
             }
 
             const isLive = result.isLive;
@@ -299,30 +308,53 @@
 
         // 如果未开播
         if (!isLive) {
-            log('[checkLive] 检测到未开播，执行下播处理');
+            consecutiveOfflineCount++;
+            log('[checkLive] 检测到未开播，连续计数:', consecutiveOfflineCount, '/', OFFLINE_CONFIRM_THRESHOLD);
 
-            // 重置所有标志
-            liveFullscreenTriggered = false;
-            lastVideoElement = null;
-            hasReloadedForLive = false; // 重置开播刷新标志
+            // 需要连续多次检测到未开播才确认下播（防止 API 抖动导致状态误重置）
+            if (consecutiveOfflineCount >= OFFLINE_CONFIRM_THRESHOLD) {
+                log('[checkLive] 确认下播，执行下播处理');
 
-            // 移除全屏样式
-            document.body.classList.remove('hide-aside-area');
+                // 重置所有标志
+                liveFullscreenTriggered = false;
+                lastVideoElement = null;
+                hasReloadedForLive = false;
+                consecutiveOfflineCount = 0;
 
-            wasLive = false;
-            sessionStorage.setItem('wasLive', 'false');
-            sessionStorage.removeItem('hasReloadedForLive'); // 清除已刷新标志，下次开播可再次触发
+                // 移除全屏样式
+                document.body.classList.remove('hide-aside-area');
+
+                wasLive = false;
+                sessionStorage.setItem('wasLive', 'false');
+                sessionStorage.removeItem('hasReloadedForLive');
+            }
             return;
         }
+
+        // 直播中，重置下播计数器
+        consecutiveOfflineCount = 0;
 
         // 检测从非直播状态变为直播状态（初次开播）
         if (isLive && !wasLive && !hasReloadedForLive) {
             log('[开播检测] 初次开播，刷新页面');
+            wasLive = true;
             hasReloadedForLive = true;
+            reloadAttemptTime = Date.now();
             sessionStorage.setItem('hasReloadedForLive', 'true');
             sessionStorage.setItem('wasLive', 'true');
             location.reload();
             return;
+        }
+
+        // reload 重试：如果之前尝试过 reload 但页面没有真正刷新
+        if (hasReloadedForLive && reloadAttemptTime > 0) {
+            const elapsed = Date.now() - reloadAttemptTime;
+            if (elapsed > RELOAD_RETRY_INTERVAL) {
+                log('[开播检测] reload 似乎未生效，重试');
+                reloadAttemptTime = Date.now();
+                location.reload();
+                return;
+            }
         }
 
         wasLive = isLive;
@@ -341,19 +373,6 @@
         }
         cachedVideoElement = document.querySelector('#live-player video');
         return cachedVideoElement;
-    }
-
-    // 获取缓存的播放器元素
-    function getCachedPlayer() {
-        if (cachedPlayerElement && document.contains(cachedPlayerElement)) {
-            return cachedPlayerElement;
-        }
-        const playerSelectors = ['.basic-player', '#live-player', '#web-player__bottom-bar__container'];
-        for (const selector of playerSelectors) {
-            cachedPlayerElement = document.querySelector(selector);
-            if (cachedPlayerElement) break;
-        }
-        return cachedPlayerElement;
     }
 
     // 检查是否已全屏（简化版）
@@ -418,10 +437,15 @@
             // 连续5次检测异常，刷新页面
             if (stallCounter >= 5) {
                 log('[卡顿检测] 检测到持续卡顿，清理缓存并刷新页面');
+                // 保存开播状态（防止 reload 后触发重复刷新）
+                const savedWasLive = sessionStorage.getItem('wasLive');
+                const savedHasReloaded = sessionStorage.getItem('hasReloadedForLive');
                 // 清理缓存
                 cachedVideoElement = null;
-                cachedPlayerElement = null;
                 sessionStorage.clear();
+                // 恢复开播状态
+                if (savedWasLive) sessionStorage.setItem('wasLive', savedWasLive);
+                if (savedHasReloaded) sessionStorage.setItem('hasReloadedForLive', savedHasReloaded);
                 location.reload();
             }
         } else {
@@ -442,28 +466,17 @@
     const STUCK_CHECK_INTERVAL = 5; // 视频卡顿检测间隔
     const FULLSCREEN_CHECK_INTERVAL = 5; // 全屏状态检查间隔
 
-    // 页面可见性标志
-    let isPageVisible = true;
-
     // 监听页面可见性变化
     document.addEventListener('visibilitychange', () => {
-        isPageVisible = document.visibilityState === 'visible';
-        log(`[页面可见性] ${isPageVisible ? '可见' : '隐藏'}`);
+        // 页面从后台切回前台时，立即检查直播状态
+        if (document.visibilityState === 'visible') {
+            log('[页面可见性] 从后台恢复，立即检查直播状态');
+            checkLive();
+        }
     });
 
-    // 合并的主循环函数（每5秒执行一次）
+    // 合并的主循环函数（每1秒执行一次）
     function mainLoop() {
-        // 页面隐藏时跳过大部分检查（节省资源）
-        if (!isPageVisible) {
-            // 后台时只执行最小限度的检查
-            if (mainLoopCounter % 30 === 0) {
-                log('[主循环] 后台模式：检查直播状态');
-                checkLive();
-            }
-            mainLoopCounter++;
-            return;
-        }
-
         mainLoopCounter++;
 
         // 计数器归零，防止溢出
@@ -536,7 +549,6 @@
         // 监听窗口大小变化，清除全屏缓存
         resizeListener = () => {
             lastWindowHeight = window.innerHeight;
-            cachedPlayerElement = null;
         };
         window.addEventListener('resize', resizeListener, { passive: true });
 
@@ -547,10 +559,6 @@
             if (videoObserver) {
                 videoObserver.disconnect();
                 videoObserver = null;
-            }
-            if (playerObserver) {
-                playerObserver.disconnect();
-                playerObserver = null;
             }
             // 移除 resize 监听器
             if (resizeListener) {
@@ -564,7 +572,6 @@
             }
             // 清除缓存的 DOM 元素引用
             cachedVideoElement = null;
-            cachedPlayerElement = null;
             lastVideoElement = null;
         });
     }
