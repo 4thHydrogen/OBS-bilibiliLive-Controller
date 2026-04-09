@@ -124,7 +124,7 @@
             localStorage.clear();
             if (sw) sessionStorage.setItem('wasLive', sw);
             if (sh) sessionStorage.setItem('hasReloadedForLive', sh);
-            location.reload(true);
+            location.reload();
             return;
         }
         log('[全屏] CSS 强制全屏');
@@ -181,6 +181,7 @@
                         log('[checkLive] DOM 降级检测到视频播放，视为开播');
                         result.success = true;
                         result.isLive = true;
+                        consecutiveApiFailures = 0;
                     }
                 }
                 if (!result.success) return;
