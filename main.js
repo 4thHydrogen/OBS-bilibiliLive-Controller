@@ -1,7 +1,7 @@
  // ==UserScript==
 // @name         Bilibili直播自动刷新+网页全屏
 // @namespace    https://github.com/tampermonkey
-// @version      7.1
+// @version      7.2
 // @description  自动刷新未播放直播、直播开播后自动网页全屏
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const DEBUG_LOG = true;
+    const DEBUG_LOG = false;
 
     // 开播状态
     let wasLive = sessionStorage.getItem('wasLive') === 'true';
@@ -148,6 +148,11 @@
         return cachedVideoElement;
     }
 
+    function isVideoPlaying() {
+        const video = getCachedVideo();
+        return video && !video.paused && video.readyState >= 2 && video.currentTime > 0;
+    }
+
     // 尝试全屏（直播中时调用）
     function tryFullscreen() {
         if (!wasLive) return;
@@ -221,6 +226,14 @@
 
             wasLive = true;
             sessionStorage.setItem('wasLive', 'true');
+
+            // 开播但无画面则刷新
+            if (!isVideoPlaying()) {
+                log('[视频状态] 开播但无画面，刷新');
+                cachedVideoElement = null;
+                location.reload();
+                return;
+            }
 
             // 立即尝试全屏
             tryFullscreen();
