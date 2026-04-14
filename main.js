@@ -292,7 +292,8 @@
         if (DEBUG_LOG && mainLoopCounter % 10 === 0) log('[主循环]', mainLoopCounter);
 
         if (mainLoopCounter % 10 === 0) checkLive();
-        if (mainLoopCounter % 5 === 0) { tryFullscreen(); detectVideoStuck(); }
+        if (mainLoopCounter % 5 === 0) tryFullscreen();
+        if (mainLoopCounter % 3 === 0 && wasLive) detectVideoStuck();
     }
 
     function setupObservers() {
