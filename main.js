@@ -242,6 +242,53 @@
         }
     }
 
+    // 播放器刷新功能 - 使用官方刷新按钮而非整页刷新
+    function refreshPlayer() {
+        log('[播放器刷新] 尝试使用官方刷新按钮');
+
+        const livePlayer = document.getElementById('live-player');
+        if (!livePlayer) {
+            log('[播放器刷新] 未找到播放器容器');
+            return false;
+        }
+
+        // 步骤1：触发鼠标移动事件显示控制栏
+        const rect = livePlayer.getBoundingClientRect();
+        const mouseMoveEvent = new MouseEvent('mousemove', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: rect.width / 2,
+            clientY: rect.height - 30
+        });
+        livePlayer.dispatchEvent(mouseMoveEvent);
+
+        // 步骤2：等待控制栏渲染后点击刷新按钮
+        setTimeout(() => {
+            const leftArea = document.querySelector('.left-area');
+            if (!leftArea) {
+                log('[播放器刷新] 未找到控制栏');
+                return false;
+            }
+
+            const icons = leftArea.querySelectorAll('.icon');
+            log('[播放器刷新] 找到', icons.length, '个控制按钮');
+
+            // 刷新按钮是第2个icon（索引1）
+            if (icons.length >= 2) {
+                const reloadBtn = icons[1];
+                log('[播放器刷新] 点击刷新按钮');
+                reloadBtn.click();
+                return true;
+            } else {
+                log('[播放器刷新] 未找到刷新按钮');
+                return false;
+            }
+        }, 100);
+
+        return true;
+    }
+
     // 卡顿检测
     let lastCheckTime = Date.now();
     let lastVideoTime = 0;
@@ -265,15 +312,17 @@
         if (progress === 0 || (ratio < 0.5 && ratio > 0) || (video.readyState < 3 && bufferAhead < 2)) {
             stallCounter++;
             log('[卡顿] 异常', stallCounter, '/5');
-            if (stallCounter >= 5) {
-                log('[卡顿] 持续卡顿，刷新');
-                const sw = sessionStorage.getItem('wasLive');
-                const sh = sessionStorage.getItem('hasReloadedForLive');
+            if (stallCounter >= 1) {
+                log('[卡顿] 持续卡顿，尝试刷新播放器');
                 cachedVideoElement = null;
-                sessionStorage.clear();
-                if (sw) sessionStorage.setItem('wasLive', sw);
-                if (sh) sessionStorage.setItem('hasReloadedForLive', sh);
-                location.reload();
+
+                // 使用官方刷新按钮刷新播放器
+                refreshPlayer();
+
+                // 重置卡顿计数器
+                stallCounter = 0;
+                lastCheckTime = Date.now();
+                lastVideoTime = 0;
             }
         } else {
             stallCounter = 0;
@@ -293,7 +342,7 @@
 
         if (mainLoopCounter % 10 === 0) checkLive();
         if (mainLoopCounter % 5 === 0) tryFullscreen();
-        if (mainLoopCounter % 3 === 0 && wasLive) detectVideoStuck();
+        if (mainLoopCounter % 2 === 0 && wasLive) detectVideoStuck();
     }
 
     function setupObservers() {
