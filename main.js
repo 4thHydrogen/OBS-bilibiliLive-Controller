@@ -1,13 +1,15 @@
  // ==UserScript==
 // @name         Bilibili直播自动刷新+网页全屏
 // @namespace    https://github.com/tampermonkey
-// @version      7.2
-// @description  自动刷新未播放直播、直播开播后自动网页全屏
+// @version      7.3
+// @description  自动刷新未播放直播、直播开播后自动网页全屏、卡顿自动刷新播放器
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
 // @inject-into  page
 // @grant        none
 // @license      MIT
+// @updateURL    https://github.com/4thHydrogen/OBS-bilibiliLive-Controller/blob/main/main.js
+// @downloadURL  https://github.com/4thHydrogen/OBS-bilibiliLive-Controller/blob/main/main.js
 // ==/UserScript==
 
 (function () {
