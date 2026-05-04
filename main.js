@@ -1,7 +1,7 @@
  // ==UserScript==
 // @name         Bilibili直播自动刷新+网页全屏
 // @namespace    https://github.com/tampermonkey
-// @version      7.6
+// @version      7.7
 // @description  自动刷新未播放直播、直播开播后自动网页全屏、卡顿自动刷新播放器
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -215,15 +215,26 @@
 
             consecutiveOfflineCount = 0;
 
+            // 检测是否为标准播放器页面（特殊活动页使用 iframe，无 #live-player）
+            const isStandardPlayer = !!document.getElementById('live-player');
+
             // 初次开播 → 刷新页面（但如果视频已经在播放，说明是"打开已在直播的页面"，跳过刷新）
             if (!wasLive && !hasReloadedForLive) {
-                if (isVideoPlaying()) {
+                if (isStandardPlayer && isVideoPlaying()) {
                     log('[checkLive] 视频已在播放，跳过刷新（打开已在直播的页面）');
                     wasLive = true;
                     hasReloadedForLive = true;
                     sessionStorage.setItem('wasLive', 'true');
                     sessionStorage.setItem('hasReloadedForLive', 'true');
-                    tryFullscreen(); // 直接全屏
+                    tryFullscreen();
+                    return;
+                }
+                if (!isStandardPlayer) {
+                    log('[checkLive] 非标准播放器页面（iframe），跳过刷新');
+                    wasLive = true;
+                    hasReloadedForLive = true;
+                    sessionStorage.setItem('wasLive', 'true');
+                    sessionStorage.setItem('hasReloadedForLive', 'true');
                     return;
                 }
                 log('[checkLive] 初次开播，刷新');
@@ -238,8 +249,8 @@
             wasLive = true;
             sessionStorage.setItem('wasLive', 'true');
 
-            // 开播但无画面则刷新
-            if (!isVideoPlaying()) {
+            // 开播但无画面则刷新（仅标准播放器页面）
+            if (isStandardPlayer && !isVideoPlaying()) {
                 log('[视频状态] 开播但无画面，刷新');
                 cachedVideoElement = null;
                 location.reload();
@@ -408,7 +419,7 @@
     }
 
     function initScript() {
-        log('[脚本] v7.6 启动');
+        log('[脚本] v7.7 启动');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => { addFullscreenStyles(); setupObservers(); });
