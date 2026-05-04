@@ -215,8 +215,17 @@
 
             consecutiveOfflineCount = 0;
 
-            // 初次开播 → 刷新页面
+            // 初次开播 → 刷新页面（但如果视频已经在播放，说明是"打开已在直播的页面"，跳过刷新）
             if (!wasLive && !hasReloadedForLive) {
+                if (isVideoPlaying()) {
+                    log('[checkLive] 视频已在播放，跳过刷新（打开已在直播的页面）');
+                    wasLive = true;
+                    hasReloadedForLive = true;
+                    sessionStorage.setItem('wasLive', 'true');
+                    sessionStorage.setItem('hasReloadedForLive', 'true');
+                    tryFullscreen(); // 直接全屏
+                    return;
+                }
                 log('[checkLive] 初次开播，刷新');
                 wasLive = true;
                 hasReloadedForLive = true;
@@ -393,7 +402,7 @@
     }
 
     function initScript() {
-        log('[脚本] v7.4 启动');
+        log('[脚本] v7.5 启动');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => { addFullscreenStyles(); setupObservers(); });
