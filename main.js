@@ -1,7 +1,7 @@
  // ==UserScript==
 // @name         Bilibili直播自动刷新+网页全屏
 // @namespace    https://github.com/tampermonkey
-// @version      7.7
+// @version      7.8
 // @description  自动刷新未播放直播、直播开播后自动网页全屏、卡顿自动刷新播放器
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -235,6 +235,7 @@
                     hasReloadedForLive = true;
                     sessionStorage.setItem('wasLive', 'true');
                     sessionStorage.setItem('hasReloadedForLive', 'true');
+                    enterFullscreen();
                     return;
                 }
                 log('[checkLive] 初次开播，刷新');
@@ -258,7 +259,11 @@
             }
 
             // 立即尝试全屏
-            tryFullscreen();
+            if (isStandardPlayer) {
+                tryFullscreen();
+            } else {
+                enterFullscreen();
+            }
         } finally {
             isCheckingLive = false;
         }
@@ -419,7 +424,7 @@
     }
 
     function initScript() {
-        log('[脚本] v7.7 启动');
+        log('[脚本] v7.8 启动');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => { addFullscreenStyles(); setupObservers(); });
