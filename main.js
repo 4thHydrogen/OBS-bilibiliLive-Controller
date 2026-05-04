@@ -244,51 +244,63 @@
         }
     }
 
-    // 播放器刷新功能 - 使用官方刷新按钮而非整页刷新
-    function refreshPlayer() {
-        log('[播放器刷新] 尝试使用官方刷新按钮');
+    // 播放器刷新功能 - 三层降级：模拟点击 > livePlayer.reload > 整页刷新
+    let isRefreshing = false;
 
-        const livePlayer = document.getElementById('live-player');
-        if (!livePlayer) {
-            log('[播放器刷新] 未找到播放器容器');
-            return false;
+    function refreshPlayer() {
+        if (isRefreshing) return;
+        isRefreshing = true;
+        log('[播放器刷新] 尝试模拟点击刷新按钮');
+
+        const livePlayerEl = document.getElementById('live-player');
+        if (!livePlayerEl) {
+            log('[播放器刷新] 未找到播放器容器，fallback reload');
+            fallbackReload();
+            isRefreshing = false;
+            return;
         }
 
-        // 步骤1：触发鼠标移动事件显示控制栏
-        const rect = livePlayer.getBoundingClientRect();
-        const mouseMoveEvent = new MouseEvent('mousemove', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: rect.width / 2,
-            clientY: rect.height - 30
-        });
-        livePlayer.dispatchEvent(mouseMoveEvent);
+        const rect = livePlayerEl.getBoundingClientRect();
+        livePlayerEl.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true, cancelable: true, view: window,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height - 30
+        }));
 
-        // 步骤2：等待控制栏渲染后点击刷新按钮
-        setTimeout(() => {
+        let attempts = 0;
+        const maxAttempts = 10;
+        const tryClick = () => {
+            attempts++;
             const leftArea = document.querySelector('.left-area');
-            if (!leftArea) {
-                log('[播放器刷新] 未找到控制栏');
-                return false;
+            if (leftArea) {
+                const icons = leftArea.querySelectorAll('.icon');
+                if (icons.length >= 2) {
+                    icons[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                    log('[播放器刷新] 模拟点击成功');
+                    isRefreshing = false;
+                    return;
+                }
             }
-
-            const icons = leftArea.querySelectorAll('.icon');
-            log('[播放器刷新] 找到', icons.length, '个控制按钮');
-
-            // 刷新按钮是第2个icon（索引1）
-            if (icons.length >= 2) {
-                const reloadBtn = icons[1];
-                log('[播放器刷新] 点击刷新按钮');
-                reloadBtn.click();
-                return true;
+            if (attempts < maxAttempts) {
+                setTimeout(tryClick, 50);
             } else {
-                log('[播放器刷新] 未找到刷新按钮');
-                return false;
+                log('[播放器刷新] 控制栏未出现，fallback reload');
+                fallbackReload();
+                isRefreshing = false;
             }
-        }, 100);
+        };
+        setTimeout(tryClick, 50);
+    }
 
-        return true;
+    function fallbackReload() {
+        if (window.livePlayer && typeof window.livePlayer.reload === 'function') {
+            log('[播放器刷新] 使用 livePlayer.reload()');
+            window.livePlayer.reload();
+        } else {
+            log('[播放器刷新] livePlayer 不可用，整页刷新');
+            cachedVideoElement = null;
+            location.reload();
+        }
     }
 
     // 卡顿检测
@@ -381,7 +393,7 @@
     }
 
     function initScript() {
-        log('[脚本] v7.1 启动');
+        log('[脚本] v7.4 启动');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => { addFullscreenStyles(); setupObservers(); });
