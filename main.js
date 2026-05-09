@@ -99,7 +99,13 @@
                 position: fixed !important;
                 top: 0 !important;
                 left: 0 !important;
-                z-index: 9999 !important;
+                z-index: 2147483647 !important;
+            }
+            .hide-aside-area #player-ctnr video,
+            .hide-aside-area #player-ctnr iframe,
+            .hide-aside-area #live-player video {
+                position: relative !important;
+                z-index: 2147483647 !important;
             }
             #shop-popover-vm { display: none !important; }
         `;
