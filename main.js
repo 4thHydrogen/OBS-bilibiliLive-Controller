@@ -85,7 +85,8 @@
             .hide-aside-area .side-bar-cntr,
             .hide-aside-area .side-bar-popup-cntr,
             .hide-aside-area #gift-control-vm,
-            .hide-aside-area .gift-control-section {
+            .hide-aside-area .gift-control-section,
+            .hide-aside-area .link-navbar-ctnr {
                 display: none !important;
             }
             .hide-aside-area #player-ctnr,
