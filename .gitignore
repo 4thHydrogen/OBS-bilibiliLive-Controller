@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Playwright MCP cache/logs
+.playwright-mcp/
+
+# Temporary & debug files
+TEMP.js
+debug_*.js
+debug_*.mjs
+
+# Config (keep example, ignore actual)
+live_monitor_config.json

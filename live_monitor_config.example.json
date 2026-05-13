@@ -1,0 +1,10 @@
+{
+    "room_id": 1616,
+    "check_interval": 300,
+    "cookie": "",
+    "bark": {
+        "server_url": "https://api.day.app",
+        "key": "LQjYRDfNZF78rJjHNQ4NGo",
+        "group": "直播监控"
+    }
+}
