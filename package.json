@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "test": "node tests/main.test.js"
+  },
   "dependencies": {
     "playwright": "^1.59.1"
   }
