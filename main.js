@@ -1,7 +1,7 @@
  // ==UserScript==
 // @name         Bilibili直播自动刷新+网页全屏
 // @namespace    https://github.com/tampermonkey
-// @version      7.8
+// @version      7.9
 // @description  自动刷新未播放直播、直播开播后自动网页全屏、卡顿自动刷新播放器
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -276,62 +276,22 @@
         }
     }
 
-    // 播放器刷新功能 - 三层降级：模拟点击 > livePlayer.reload > 整页刷新
+    // 播放器刷新功能 - 优先使用 livePlayer API，否则整页刷新
     let isRefreshing = false;
 
     function refreshPlayer() {
         if (isRefreshing) return;
         isRefreshing = true;
-        log('[播放器刷新] 尝试模拟点击刷新按钮');
-
-        const livePlayerEl = document.getElementById('live-player');
-        if (!livePlayerEl) {
-            log('[播放器刷新] 未找到播放器容器，fallback reload');
-            fallbackReload();
-            isRefreshing = false;
-            return;
-        }
-
-        const rect = livePlayerEl.getBoundingClientRect();
-        livePlayerEl.dispatchEvent(new MouseEvent('mousemove', {
-            bubbles: true, cancelable: true, view: window,
-            clientX: rect.left + rect.width / 2,
-            clientY: rect.top + rect.height - 30
-        }));
-
-        let attempts = 0;
-        const maxAttempts = 10;
-        const tryClick = () => {
-            attempts++;
-            const leftArea = document.querySelector('.left-area');
-            if (leftArea) {
-                const icons = leftArea.querySelectorAll('.icon');
-                if (icons.length >= 2) {
-                    icons[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                    log('[播放器刷新] 模拟点击成功');
-                    // 延迟派发 mouseleave 事件，让控制栏自然消失
-                    setTimeout(() => {
-                        livePlayerEl.dispatchEvent(new MouseEvent('mouseleave', {
-                            bubbles: true, cancelable: true, view: window
-                        }));
-                    }, 100);
-                    isRefreshing = false;
-                    return;
-                }
-            }
-            if (attempts < maxAttempts) {
-                setTimeout(tryClick, 50);
-            } else {
-                log('[播放器刷新] 控制栏未出现，fallback reload');
-                fallbackReload();
-                isRefreshing = false;
-            }
-        };
-        setTimeout(tryClick, 50);
+        log('[播放器刷新] 尝试刷新播放器');
+        fallbackReload();
+        isRefreshing = false;
     }
 
     function fallbackReload() {
-        if (window.livePlayer && typeof window.livePlayer.reload === 'function') {
+        if (window.livePlayer && typeof window.livePlayer.refresh === 'function') {
+            log('[播放器刷新] 使用 livePlayer.refresh()');
+            window.livePlayer.refresh();
+        } else if (window.livePlayer && typeof window.livePlayer.reload === 'function') {
             log('[播放器刷新] 使用 livePlayer.reload()');
             window.livePlayer.reload();
         } else {
@@ -431,7 +391,7 @@
     }
 
     function initScript() {
-        log('[脚本] v7.8 启动');
+        log('[脚本] v7.9 启动');
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => { addFullscreenStyles(); setupObservers(); });
