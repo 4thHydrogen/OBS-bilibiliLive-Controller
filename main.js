@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili直播全屏+画质优化
 // @namespace    https://github.com/tampermonkey
-// @version      8.3
+// @version      8.3.1
 // @description  自动检测直播状态、开播后自动网页全屏、自动选择最高直播画质并保持、卡顿时自动刷新播放器
 // @author       Tampermonkey用户
 // @match        *://live.bilibili.com/*
@@ -455,12 +455,7 @@
         const expected = (now - lastCheckTime) / 1000;
         const ratio = progress / expected;
 
-        let bufferAhead = 0;
-        if (video.buffered.length > 0) {
-            bufferAhead = video.buffered.end(video.buffered.length - 1) - currentTime;
-        }
-
-        if (progress === 0 || (ratio < 0.5 && ratio > 0) || (video.readyState < 3 && bufferAhead < 2)) {
+        if (progress === 0 || (ratio < 0.2 && ratio > 0)) {
             stallCounter++;
             log('[卡顿] 异常', stallCounter, '/5');
             if (stallCounter >= 1) {
